@@ -6,7 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo  # built-in since Python 3.9
 
 from notifications import TradingNotifications
-from options_trader_ist import IntradayNiftyTrader  # use your patched IST-safe trader
+from options_trader import IntradayNiftyTrader  # use your patched IST-safe trader
 
 # Define IST timezone once
 IST = ZoneInfo("Asia/Kolkata")
