@@ -9,12 +9,19 @@ on:
     # Run every weekday at 9:00 AM IST (3:30 AM UTC)
     - cron: '30 3 * * 1-5'
 
+env:
+  TZ: 'Asia/Kolkata'  # Set IST timezone for entire workflow
+
 jobs:
   trading:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     
     steps:
+      # Show current IST time
+      - name: Show IST time
+        run: echo "Workflow started at - $(date '+%Y-%m-%d %H:%M:%S IST')"
+      
       # Checkout repository code
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,7 +60,10 @@ jobs:
       
       # Run the trading bot
       - name: Run trading bot
-        run: python wrapper.py
+        run: |
+          echo "Trading bot started at - $(date '+%Y-%m-%d %H:%M:%S IST')"
+          python wrapper.py
+          echo "Trading bot ended at - $(date '+%Y-%m-%d %H:%M:%S IST')"
         env:
           PYTHONUNBUFFERED: 1
           TRADING_ENV: production
@@ -82,7 +92,7 @@ jobs:
           echo "## Trading Bot Run Summary" >> $GITHUB_STEP_SUMMARY
           echo "- Run Number: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Time: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "- Time: $(date '+%Y-%m-%d %H:%M:%S IST')" >> $GITHUB_STEP_SUMMARY
           
           # Add any summary from your trading bot
           if [ -f "summary.txt" ]; then
