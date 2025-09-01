@@ -6,38 +6,38 @@ on:
       - 'nifty_intraday_token.txt'
   workflow_dispatch:
   schedule:
-    # Run every weekday at 9:00 AM IST (3:30 AM UTC)
-    - cron: '30 3 * * 1-5'
+    # Run every weekday at 9:15 AM IST (3:45 AM UTC)
+    - cron: '45 3 * * 1-5'
 
 env:
-  TZ: 'Asia/Kolkata'  # Set IST timezone for entire workflow
+  TZ: 'Asia/Kolkata'  # Force IST timezone for workflow
 
 jobs:
   trading:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-    
+    timeout-minutes: 400   # ~6 hrs 40 mins (covers full market session)
+
     steps:
       # Show current IST time
       - name: Show IST time
-        run: echo "Workflow started at - $(date '+%Y-%m-%d %H:%M:%S IST')"
-      
+        run: echo "Workflow started at - $(date '+%Y-%m-%d %H:%M:%S %Z')"
+
       # Checkout repository code
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       # Setup Python with caching
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
-      
+
       # Create cache key for dependencies
       - name: Get pip cache dir
         id: pip-cache
         run: echo "dir=$(pip cache dir)" >> $GITHUB_OUTPUT
-      
+
       # Cache dependencies
       - name: Cache pip packages
         uses: actions/cache@v4
@@ -46,7 +46,7 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-      
+
       # Install dependencies
       - name: Install dependencies
         run: |
@@ -57,20 +57,19 @@ jobs:
                       tabulate==0.9.0 \
                       openpyxl==3.1.2 \
                       pytz==2023.3
-      
+
       # Run the trading bot
       - name: Run trading bot
         run: |
-          echo "Trading bot started at - $(date '+%Y-%m-%d %H:%M:%S IST')"
+          echo "Trading bot started at - $(date '+%Y-%m-%d %H:%M:%S %Z')"
           python wrapper.py
-          echo "Trading bot ended at - $(date '+%Y-%m-%d %H:%M:%S IST')"
+          echo "Trading bot ended at - $(date '+%Y-%m-%d %H:%M:%S %Z')"
         env:
           PYTHONUNBUFFERED: 1
           TRADING_ENV: production
-          # Uncomment and add your secrets in GitHub
           # API_KEY: ${{ secrets.TRADING_API_KEY }}
           # API_SECRET: ${{ secrets.TRADING_API_SECRET }}
-      
+
       # Upload trading reports and logs
       - name: Upload reports
         if: always()
@@ -84,7 +83,7 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
           compression-level: 9
-      
+
       # Create summary
       - name: Create job summary
         if: always()
@@ -92,9 +91,8 @@ jobs:
           echo "## Trading Bot Run Summary" >> $GITHUB_STEP_SUMMARY
           echo "- Run Number: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Time: $(date '+%Y-%m-%d %H:%M:%S IST')" >> $GITHUB_STEP_SUMMARY
+          echo "- Time: $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
           
-          # Add any summary from your trading bot
           if [ -f "summary.txt" ]; then
             echo "### Trading Summary" >> $GITHUB_STEP_SUMMARY
             cat summary.txt >> $GITHUB_STEP_SUMMARY
