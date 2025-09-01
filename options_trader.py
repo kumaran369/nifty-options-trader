@@ -16,8 +16,16 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 import sys
+import pytz
 import itertools
 
+
+
+# Always use IST timezone for consistency on GitHub Actions
+IST = pytz.timezone("Asia/Kolkata")
+
+def now_ist():
+    return datetime.now(IST)
 warnings.filterwarnings('ignore')
 
 class StatusDisplay:
@@ -35,7 +43,7 @@ class StatusDisplay:
         
     def format_time_remaining(self, target_time_str):
         """Calculate time remaining to target"""
-        now = datetime.now()
+        now = now_ist()
         target = datetime.strptime(target_time_str, '%H:%M').replace(
             year=now.year, month=now.month, day=now.day
         )
@@ -55,7 +63,7 @@ class StatusDisplay:
         current = datetime.strptime(current_time, '%H:%M')
         
         # Add today's date
-        now = datetime.now()
+        now = now_ist()
         market_open = market_open.replace(year=now.year, month=now.month, day=now.day)
         market_close = market_close.replace(year=now.year, month=now.month, day=now.day)
         current = current.replace(year=now.year, month=now.month, day=now.day)
@@ -317,7 +325,7 @@ class IntradayNiftyTrader:
     
     def get_current_expiry(self):
         """Get current weekly expiry (Tuesday)"""
-        today = datetime.now()
+        today = now_ist()
         
         if today.weekday() == 5 or today.weekday() == 6:
             days_ahead = (1 - today.weekday()) % 7
@@ -446,7 +454,7 @@ class IntradayNiftyTrader:
 
     def get_historical_data(self, interval='1minute', days=5):
         """Get historical data for analysis"""
-        to_date = datetime.now()
+        to_date = now_ist()
         
         while to_date.weekday() == 5 or to_date.weekday() == 6:
             to_date = to_date - timedelta(days=1)
@@ -671,7 +679,7 @@ class IntradayNiftyTrader:
         if len(df) < 20:
             return None
             
-        today = datetime.now().date()
+        today = now_ist().date()
         today_data = df[df.index.date == today]
         
         if len(today_data) < 5:
@@ -852,7 +860,7 @@ class IntradayNiftyTrader:
     
     def get_opening_range(self, df):
         """Get opening range high and low"""
-        today = datetime.now().date()
+        today = now_ist().date()
         morning_data = df[df.index.date == today]
         
         if len(morning_data) > 0:
@@ -1078,7 +1086,7 @@ class IntradayNiftyTrader:
         if df is None or len(df) < 30:
             return None
         
-        current_time = datetime.now().strftime('%H:%M')
+        current_time = now_ist().strftime('%H:%M')
         
         # Check trading time window
         if current_time < self.trading_start or current_time > self.last_entry:
@@ -1093,7 +1101,7 @@ class IntradayNiftyTrader:
         
         # Check cooldown
         if self.last_signal_time and len(self.trades_today) > 0:
-            time_diff = (datetime.now() - self.last_signal_time).seconds / 60
+            time_diff = (now_ist() - self.last_signal_time).seconds / 60
             if time_diff < self.signal_cooldown_minutes:
                 return None
         
@@ -1281,7 +1289,7 @@ class IntradayNiftyTrader:
                 'spot_price': current_price,
                 'momentum': momentum,
                 'atr': df['high'].iloc[-10:].max() - df['low'].iloc[-10:].min(),
-                'time': datetime.now()
+                'time': now_ist()
             }
             self.potential_signals.append(potential_signal)
             
@@ -1361,7 +1369,7 @@ class IntradayNiftyTrader:
             ["Strike Price", f"Rs.{option_details['strike']}"],
             ["Option Premium", f"Rs.{option_details['premium']:.2f}"],
             ["Expiry", expiry_str],
-            ["Time", datetime.now().strftime('%H:%M:%S')],
+            ["Time", now_ist().strftime('%H:%M:%S')],
             ["Signal Attempts Today", self.signal_attempts]
         ]
         
@@ -1453,7 +1461,7 @@ INTRADAY NIFTY OPTIONS SIGNAL
 {forced_text}
 Signal: {signal['type']} - {signal['strength']}
 Score: {signal['score']:.1f}
-Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Time: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}
 
 TRADE DETAILS:
 ==============
@@ -1512,7 +1520,7 @@ Note: This is an automated intraday signal.
         if not self.open_position:
             return None
         
-        current_time = datetime.now()
+        current_time = now_ist()
         time_str = current_time.strftime('%H:%M')
         
         # Get current option price
@@ -1743,7 +1751,7 @@ Note: This is an automated intraday signal.
             ws2.append(["Daily P&L", f"Rs.{self.daily_pnl:,.0f}"])
             
             # Save file
-            filename = f"intraday_signals_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            filename = f"intraday_signals_{now_ist().strftime('%Y%m%d')}.xlsx"
             wb.save(filename)
             print(f"\n📊 Excel report saved: {filename}")
             
@@ -1781,7 +1789,7 @@ Note: This is an automated intraday signal.
         
         while True:
             try:
-                now = datetime.now()
+                now = now_ist()
                 current_time = now.strftime('%H:%M')
                 
                 # Weekend check
