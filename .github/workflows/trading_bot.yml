@@ -1,0 +1,33 @@
+name: Nifty Options Trading Bot
+
+on:
+  push:
+    paths:
+      - 'nifty_intraday_token.txt'
+  workflow_dispatch:
+
+jobs:
+  trading:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: pip install requests pandas numpy tabulate openpyxl
+    
+    - name: Run trading bot
+      run: python wrapper.py
+    
+    - name: Upload reports
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: trading-reports-${{ github.run_number }}
+        path: |
+          *.xlsx
+          *.log
