@@ -45,7 +45,7 @@ class StatusDisplay:
         """Calculate time remaining to target"""
         now = now_ist()
         target = datetime.strptime(target_time_str, '%H:%M').replace(
-            year=now.year, month=now.month, day=now.day
+            year=now.year, month=now.month, day=now.day, tzinfo=IST
         )
         
         if target < now:
@@ -64,9 +64,9 @@ class StatusDisplay:
         
         # Add today's date
         now = now_ist()
-        market_open = market_open.replace(year=now.year, month=now.month, day=now.day)
-        market_close = market_close.replace(year=now.year, month=now.month, day=now.day)
-        current = current.replace(year=now.year, month=now.month, day=now.day)
+        market_open = market_open.replace(year=now.year, month=now.month, day=now.day, tzinfo=IST)
+        market_close = market_close.replace(year=now.year, month=now.month, day=now.day, tzinfo=IST)
+        current = current.replace(year=now.year, month=now.month, day=now.day, tzinfo=IST)
         
         if current < market_open:
             return "[⏳ Pre-Market]"
@@ -680,7 +680,12 @@ class IntradayNiftyTrader:
             return None
             
         today = now_ist().date()
-        today_data = df[df.index.date == today]
+        # Handle timezone-aware index
+        if df.index.tz is not None:
+            df_dates = df.index.tz_localize(None).date
+        else:
+            df_dates = df.index.date
+        today_data = df[df_dates == today]
         
         if len(today_data) < 5:
             today_data = df.tail(30)
@@ -861,7 +866,12 @@ class IntradayNiftyTrader:
     def get_opening_range(self, df):
         """Get opening range high and low"""
         today = now_ist().date()
-        morning_data = df[df.index.date == today]
+        # Convert index to date for comparison if it has timezone info
+        if df.index.tz is not None:
+            df_dates = df.index.tz_localize(None).date
+        else:
+            df_dates = df.index.date
+        morning_data = df[df_dates == today]
         
         if len(morning_data) > 0:
             opening_range = morning_data.between_time('09:15', '09:30')
