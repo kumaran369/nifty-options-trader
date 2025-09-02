@@ -219,16 +219,29 @@ class IntradayNiftyTrader:
         if not self.sender_email or not self.sender_password or not self.recipient_email:
             print("[WARN] Email env vars missing: EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT")
         
-        # Notification Configuration (Discord only) from environment
+        # Notification Configuration from environment
         self.discord_config = {
             'webhook_url': os.getenv("DISCORD_WEBHOOK_URL", "")
         }
         if not self.discord_config['webhook_url']:
             print("[WARN] Discord env var missing: DISCORD_WEBHOOK_URL")
+
+        self.telegram_config = {
+            'bot_token': os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            'chat_id': os.getenv("TELEGRAM_CHAT_ID", "")
+        }
+        if not self.telegram_config['bot_token'] or not self.telegram_config['chat_id']:
+            print("[WARN] Telegram env vars missing: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID")
         
-        # Initialize notification manager (Discord only)
+        # Initialize notification manager (Discord + Telegram + Email)
         self.notification_manager = NotificationManager(
-            discord_config=self.discord_config
+            discord_config=self.discord_config,
+            telegram_config=self.telegram_config,
+            email_config={
+                'sender_email': self.sender_email,
+                'sender_password': self.sender_password,
+                'recipient_email': self.recipient_email,
+            }
         )
         
         # Nifty configuration
