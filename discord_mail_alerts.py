@@ -282,6 +282,43 @@ class NotificationManager:
             body = message.replace('━━━━━━━━━━━━━━━━━━━━', '-'*20)
             self.email_sender.send_email(subject, body)
 
+    # --- Bot lifecycle notifications ---
+    def send_bot_started(self):
+        time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        msg = f"✅ Trading Bot Started\n🕐 Time: {time_str}"
+        # Discord
+        if self.discord_webhook:
+            self.discord_webhook.send_message(msg)
+        # Telegram
+        if self.telegram_bot:
+            self.telegram_bot.send_message(msg)
+        # Email
+        if self.email_sender:
+            self.email_sender.send_email("Trading Bot Started", msg)
+
+    def send_bot_completed(self, signals=0, trades=0, pnl=0.0):
+        time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        msg = (
+            f"✅ Trading Session Completed\n🕐 Time: {time_str}\n\n"
+            f"Summary:\n- Signals: {signals}\n- Trades: {trades}\n- P&L: ₹{pnl:,.2f}"
+        )
+        if self.discord_webhook:
+            self.discord_webhook.send_message(msg)
+        if self.telegram_bot:
+            self.telegram_bot.send_message(msg)
+        if self.email_sender:
+            self.email_sender.send_email("Trading Session Completed", msg)
+
+    def send_bot_error(self, error_text):
+        time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        msg = f"⚠️ Bot Error\n🕐 Time: {time_str}\n\n{error_text}"
+        if self.discord_webhook:
+            self.discord_webhook.send_message(msg)
+        if self.telegram_bot:
+            self.telegram_bot.send_message(msg)
+        if self.email_sender:
+            self.email_sender.send_email("Bot Error", msg)
+
     def _format_email_signal(self, signal, option_details, targets, quantity, total_investment):
         """Create subject/body for email signal"""
         s_type = signal.get('type', 'CALL')
