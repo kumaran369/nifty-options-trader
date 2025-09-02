@@ -4,9 +4,9 @@ import os
 import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo  # built-in since Python 3.9
+from dotenv import load_dotenv
 
-from notifications import TradingNotifications
-from options_trader import IntradayNiftyTrader  # use your patched IST-safe trader
+from options_trader import IntradayNiftyTrader
 
 # Define IST timezone once
 IST = ZoneInfo("Asia/Kolkata")
@@ -16,36 +16,29 @@ def now_ist():
     return datetime.now(IST)
 
 def main():
-    notifier = TradingNotifications()
+    load_dotenv()
 
     try:
-        # Log bot start
         print(f"✅ Bot started at {now_ist().strftime('%Y-%m-%d %H:%M:%S IST')}")
 
-        # Send start notification
-        notifier.bot_started()
-
         # Load token
-        with open("nifty_intraday_token.txt", "r") as f:
-            token = f.read().strip()
+        token_path = "nifty_intraday_token.txt"
+        if os.path.exists(token_path):
+            with open(token_path, "r") as f:
+                token = f.read().strip()
+        else:
+            print("❌ Access token not found. Please generate a new token using IntradayNiftyTrader.get_access_token() from options_trader.py")
+            sys.exit(1)
 
         # Initialize and run trader
         trader = IntradayNiftyTrader(token)
         trader.run()
-
-        # Send completion notification
-        notifier.bot_completed(
-            len(trader.all_signals),
-            len(trader.trades_today),
-            trader.daily_pnl,
-        )
 
         print(f"✅ Bot finished at {now_ist().strftime('%Y-%m-%d %H:%M:%S IST')}")
 
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
         print(f"❌ ERROR: {error_msg}")
-        notifier.bot_error(error_msg)
         sys.exit(1)
 
 

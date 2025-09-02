@@ -18,8 +18,13 @@ from openpyxl.utils import get_column_letter
 import sys
 import pytz
 import itertools
+from discord_mail_alerts import NotificationManager
+from dotenv import load_dotenv
 
 
+
+# Load environment variables from .env if present
+load_dotenv()
 
 # Always use IST timezone for consistency on GitHub Actions
 IST = pytz.timezone("Asia/Kolkata")
@@ -207,10 +212,24 @@ class IntradayNiftyTrader:
             'Authorization': f'Bearer {self.access_token}'
         }
         
-        # Email configuration
-        self.sender_email = "akumaran313@gmail.com"
-        self.sender_password = "nfxv pygy qbbm pcdn"
-        self.recipient_email = "akumaran313@gmail.com"
+        # Email configuration (from environment)
+        self.sender_email = os.getenv("EMAIL_SENDER", "")
+        self.sender_password = os.getenv("EMAIL_PASSWORD", "")
+        self.recipient_email = os.getenv("EMAIL_RECIPIENT", "")
+        if not self.sender_email or not self.sender_password or not self.recipient_email:
+            print("[WARN] Email env vars missing: EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT")
+        
+        # Notification Configuration (Discord only) from environment
+        self.discord_config = {
+            'webhook_url': os.getenv("DISCORD_WEBHOOK_URL", "")
+        }
+        if not self.discord_config['webhook_url']:
+            print("[WARN] Discord env var missing: DISCORD_WEBHOOK_URL")
+        
+        # Initialize notification manager (Discord only)
+        self.notification_manager = NotificationManager(
+            discord_config=self.discord_config
+        )
         
         # Nifty configuration
         self.nifty_symbol = "NSE_INDEX|Nifty 50"
@@ -270,11 +289,16 @@ class IntradayNiftyTrader:
         # Status display
         self.status = StatusDisplay()
         
+    
+    # --- existing methods remain unchanged ---
+
     def get_access_token(self):
         """Get new access token"""
-        API_KEY = "f7a06113-6a6e-4103-b75f-85fec3bfa40c"
-        API_SECRET = "uy0k3d1pxb"
-        REDIRECT_URI = "http://localhost:8080/callback"
+        API_KEY = os.getenv("UPSTOX_API_KEY", "")
+        API_SECRET = os.getenv("UPSTOX_API_SECRET", "")
+        REDIRECT_URI = os.getenv("UPSTOX_REDIRECT_URI", "http://localhost:8080/callback")
+        if not API_KEY or not API_SECRET:
+            print("[WARN] Upstox env vars missing: UPSTOX_API_KEY, UPSTOX_API_SECRET")
         
         print("\nGetting Upstox Access Token...")
         
@@ -1403,14 +1427,23 @@ class IntradayNiftyTrader:
         print(tabulate(trade_table, headers=["Parameter", "Value"], tablefmt="grid"))
         
         # Momentum Indicators
+        mom = signal.get('momentum', {}) or {}
+        ema_fast_val = mom.get('ema_fast', signal.get('spot_price', 0.0))
+        ema_slow_val = mom.get('ema_slow', signal.get('spot_price', 0.0))
+        roc_val = mom.get('roc', 0.0)
+        vol_ratio_val = mom.get('volume_ratio', 0.0)
+        vwap_val = mom.get('vwap', signal.get('spot_price', 0.0))
+        pvv_val = mom.get('price_vs_vwap', 0.0)
+        delta_trend_val = mom.get('delta_trend', 'NEUTRAL')
+
         momentum_table = [
-            ["EMA 5", f"Rs.{signal['momentum']['ema_fast']:.2f}"],
-            ["EMA 13", f"Rs.{signal['momentum']['ema_slow']:.2f}"],
-            ["Price ROC", f"{signal['momentum']['roc']:.2f}%"],
-            ["Volume Ratio", f"{signal['momentum']['volume_ratio']:.2f}x"],
-            ["VWAP", f"Rs.{signal['momentum']['vwap']:.2f}"],
-            ["Price vs VWAP", f"{signal['momentum']['price_vs_vwap']:.2f}%"],
-            ["Delta Trend", signal['momentum']['delta_trend']]
+            ["EMA 5", f"Rs.{ema_fast_val:.2f}"],
+            ["EMA 13", f"Rs.{ema_slow_val:.2f}"],
+            ["Price ROC", f"{roc_val:.2f}%"],
+            ["Volume Ratio", f"{vol_ratio_val:.2f}x"],
+            ["VWAP", f"Rs.{vwap_val:.2f}"],
+            ["Price vs VWAP", f"{pvv_val:.2f}%"],
+            ["Delta Trend", delta_trend_val]
         ]
         
         if signal.get('option_sentiment'):
@@ -1426,7 +1459,7 @@ class IntradayNiftyTrader:
         
         # Signal Reasons
         print("\nSIGNAL REASONS:")
-        for i, reason in enumerate(signal['reasons'], 1):
+        for i, reason in enumerate(signal.get('reasons', []) or [], 1):
             print(f"   {i}. {reason}")
         
         # Option Details
@@ -1450,34 +1483,69 @@ class IntradayNiftyTrader:
         
         print("\n" + "="*80)
     
+    def send_all_alerts(self, signal, option_details):
+        """Send alerts via Email and Discord"""
+        expiry_date, expiry_str = self.get_current_expiry()
+        targets = self.calculate_option_targets(option_details['premium'])
+        quantity = self.fixed_lots * self.nifty_lot_size
+        total_investment = option_details['premium'] * quantity
+        
+        # Send Email Alert
+        self.send_email_alert(signal, option_details)
+        
+        # Send Discord alert
+        try:
+            self.notification_manager.send_all_alerts(
+                signal, option_details, targets, quantity, total_investment
+            )
+        except Exception as e:
+            print(f"Notification error: {e}")
+    
     def send_email_alert(self, signal, option_details):
         """Send email alert for intraday signal"""
         try:
             msg = MIMEMultipart()
             msg['From'] = self.sender_email
             msg['To'] = self.recipient_email
-            msg['Subject'] = f"INTRADAY {signal['type']} - {signal['strength']} Signal"
+            # Safe access with defaults to avoid KeyErrors
+            stype = signal.get('type', 'CALL')
+            strength = signal.get('strength', 'WEAK')
+            score = signal.get('score', 0)
+            spot_price = signal.get('spot_price', 0.0)
+            momentum = signal.get('momentum', {}) or {}
+            ema_crossover = momentum.get('ema_crossover', False)
+            volume_ratio = momentum.get('volume_ratio', 0.0)
+            vwap_val = momentum.get('vwap', 0.0)
+            delta_trend = momentum.get('delta_trend', 'N/A')
+            reasons = signal.get('reasons', []) or []
+            reasons_text = chr(10).join([f"- {r}" for r in reasons]) if reasons else "No reasons provided."
+
+            # Option details fallbacks
+            strike = option_details.get('strike', 0)
+            premium = option_details.get('premium', 0.0)
+
+            msg['Subject'] = f"INTRADAY {stype} - {strength} Signal"
             
             expiry_date, expiry_str = self.get_current_expiry()
-            targets = self.calculate_option_targets(option_details['premium'])
+            targets = self.calculate_option_targets(premium)
             
             quantity = self.fixed_lots * self.nifty_lot_size
-            total_investment = option_details['premium'] * quantity
+            total_investment = premium * quantity
             
             forced_text = "\n⚠️ FORCED SIGNAL - End of day trade\n" if signal.get('forced') else ""
             
             body = f"""
 INTRADAY NIFTY OPTIONS SIGNAL
 {forced_text}
-Signal: {signal['type']} - {signal['strength']}
-Score: {signal['score']:.1f}
+Signal: {stype} - {strength}
+Score: {score:.1f}
 Time: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}
 
 TRADE DETAILS:
 ==============
-Option Type: {signal['type']}
-Strike Price: Rs.{option_details['strike']}
-Premium: Rs.{option_details['premium']:.2f}
+Option Type: {stype}
+Strike Price: Rs.{strike}
+Premium: Rs.{premium:.2f}
 Expiry: {expiry_str}
 Quantity: {quantity} shares ({self.fixed_lots} lot)
 Investment: Rs.{total_investment:,.0f}
@@ -1490,15 +1558,15 @@ Target 2: Rs.{targets['target2']:.2f} (+{self.target2_percent}%)
 
 MOMENTUM DATA:
 =============
-Spot Price: Rs.{signal['spot_price']:.2f}
-EMA Status: {'Bullish' if signal['momentum']['ema_crossover'] else 'Bearish'}
-Volume Ratio: {signal['momentum']['volume_ratio']:.2f}x
-VWAP: Rs.{signal['momentum']['vwap']:.2f}
-Delta Trend: {signal['momentum']['delta_trend']}
+Spot Price: Rs.{spot_price:.2f}
+EMA Status: {'Bullish' if ema_crossover else 'Bearish'}
+Volume Ratio: {volume_ratio:.2f}x
+VWAP: Rs.{vwap_val:.2f}
+Delta Trend: {delta_trend}
 
 REASONS:
 ========
-{chr(10).join([f"- {reason}" for reason in signal['reasons']])}
+{reasons_text}
 
 RULES:
 ======
@@ -1939,7 +2007,7 @@ Note: This is an automated intraday signal.
                         if option_details:
                             print("\n")  # Clear the status line
                             self.display_signal(signal, option_details)
-                            self.send_email_alert(signal, option_details)
+                            self.send_all_alerts(signal, option_details)
                             
                             # Create position entry
                             targets = self.calculate_option_targets(option_details['premium'])

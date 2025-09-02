@@ -3,3 +3,5 @@ pandas
 numpy
 tabulate
 openpyxl
+pytz
+python-dotenv
