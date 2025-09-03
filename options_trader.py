@@ -137,8 +137,8 @@ class StatusDisplay:
             pnl_icon = "🟢" if daily_pnl >= 0 else "🔴"
             status_parts.append(f"{pnl_icon} P&L: ₹{daily_pnl:+,.0f}")
         
-        # Add force signal countdown
-        if force_time_remaining and trades_today == 0:
+        # Add force signal countdown (only if enabled)
+        if self.enable_force_entry and force_time_remaining and trades_today == 0:
             status_parts.append(f"⏰ Force in: {force_time_remaining}")
         
         # Add signal status
@@ -254,6 +254,8 @@ class IntradayNiftyTrader:
         self.trading_start = "09:30"
         self.last_entry = "15:00"
         self.forced_signal_time = "14:30"
+        # Feature toggle: disable forced entry by default
+        self.enable_force_entry = False
         self.square_off_start = "15:15"
         self.market_close = "15:30"
         
@@ -290,6 +292,9 @@ class IntradayNiftyTrader:
         self.daily_pnl = 0
         self.last_signal_time = None
         self.signal_cooldown_minutes = 10
+        
+        # Detailed trade log (per realized exit)
+        self.trades_log = []
         
         # Position tracking
         self.open_position = None
@@ -489,69 +494,6 @@ class IntradayNiftyTrader:
         except Exception as e:
             return None
 
-    def get_historical_data(self, interval='1minute', days=5):
-        """Get historical data for analysis"""
-        to_date = now_ist()
-        
-        while to_date.weekday() == 5 or to_date.weekday() == 6:
-            to_date = to_date - timedelta(days=1)
-        
-        instrument_key = "NSE_INDEX%7CNifty%2050"
-        
-        if days <= 1:
-            date_str = to_date.strftime('%Y-%m-%d')
-            urls = [
-                f"{self.base_url}/v2/historical-candle/intraday/{instrument_key}/{interval}/{date_str}",
-                f"{self.base_url}/v3/historical-candle/{instrument_key}/intraday/{interval}",
-                f"{self.base_url}/v2/historical-candle/{instrument_key}/{interval}/{date_str}"
-            ]
-        else:
-            from_date = to_date - timedelta(days=days)
-            to_date_str = to_date.strftime('%Y-%m-%d')
-            from_date_str = from_date.strftime('%Y-%m-%d')
-            
-            urls = [
-                f"{self.base_url}/v2/historical-candle/{instrument_key}/{interval}/{to_date_str}/{from_date_str}"
-            ]
-        
-        for url in urls:
-            try:
-                response = requests.get(url, headers=self.headers, timeout=15)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('status') == 'success' and 'data' in data:
-                        candles = data['data'].get('candles', [])
-                        if len(candles) > 0:
-                            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
-                            df['timestamp'] = pd.to_datetime(df['timestamp'])
-                            df = df.sort_values('timestamp')
-                            
-                            if days <= 1:
-                                today = to_date.date()
-                                df_dates = df['timestamp'].dt.tz_localize(None).dt.date if df['timestamp'].dt.tz is not None else df['timestamp'].dt.date
-                                current_day_df = df[df_dates == today]
-                                
-                                if len(current_day_df) > 0:
-                                    df = current_day_df
-                                else:
-                                    df = df.tail(300)
-                            
-                            df.set_index('timestamp', inplace=True)
-                            
-                            numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'oi']
-                            df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
-                            
-                            if interval == '1minute' and len(df) > 5:
-                                df = self.resample_to_5min(df)
-                            
-                            return df
-                    
-            except Exception as e:
-                continue
-        
-        return None
-    
     def resample_to_5min(self, df):
         """Resample 1-minute data to 5-minute candles"""
         try:
@@ -583,7 +525,7 @@ class IntradayNiftyTrader:
         down = -seed[seed < 0].sum() / period
         
         if down == 0:
-            return 100
+            return np.full_like(prices, 100.0)
         
         rs = up / down
         rsi = np.zeros_like(prices)
@@ -719,7 +661,7 @@ class IntradayNiftyTrader:
         today = now_ist().date()
         # Handle timezone-aware index
         if df.index.tz is not None:
-            df_dates = df.index.tz_localize(None).date
+            df_dates = df.index.tz_convert(None).date
         else:
             df_dates = df.index.date
         today_data = df[df_dates == today]
@@ -905,7 +847,7 @@ class IntradayNiftyTrader:
         today = now_ist().date()
         # Convert index to date for comparison if it has timezone info
         if df.index.tz is not None:
-            df_dates = df.index.tz_localize(None).date
+            df_dates = df.index.tz_convert(None).date
         else:
             df_dates = df.index.date
         morning_data = df[df_dates == today]
@@ -1302,13 +1244,14 @@ class IntradayNiftyTrader:
                         bear_score += 2
                         reasons.append("Rejection from VWAP")
         
-        # Force signal logic
+        # Force signal logic (only if enabled)
         force_signal = False
-        if current_time >= self.forced_signal_time and len(self.trades_today) == 0:
-            if max(bull_score, bear_score) >= 2:
-                force_signal = True
-                min_score = 2
-                reasons.append("End of day signal (forced)")
+        if self.enable_force_entry:
+            if current_time >= self.forced_signal_time and len(self.trades_today) == 0:
+                if max(bull_score, bear_score) >= 2:
+                    force_signal = True
+                    min_score = 2
+                    reasons.append("End of day signal (forced)")
         
         # Apply confidence multiplier
         bull_score *= confidence_multiplier
@@ -1503,10 +1446,7 @@ class IntradayNiftyTrader:
         quantity = self.fixed_lots * self.nifty_lot_size
         total_investment = option_details['premium'] * quantity
         
-        # Send Email Alert
-        self.send_email_alert(signal, option_details)
-        
-        # Send Discord alert
+        # Send all notifications through notification manager (includes Email, Discord, Telegram)
         try:
             self.notification_manager.send_all_alerts(
                 signal, option_details, targets, quantity, total_investment
@@ -1660,7 +1600,8 @@ Note: This is an automated intraday signal.
         
         # Trailing stop loss (after 30% profit)
         elif pnl_percent >= 30:
-            trailing_sl = entry_price * 1.05  # Trail to 5% above entry
+            # Trail to entry price as per rules
+            trailing_sl = entry_price
             if current_price <= trailing_sl:
                 exit_reason = "Trailing Stop Loss"
                 exit_action = "FULL_EXIT"
@@ -1676,6 +1617,49 @@ Note: This is an automated intraday signal.
             print(f"Time: {current_time.strftime('%H:%M:%S')}")
             print(f"{'='*60}\n")
             
+            # Log realized trade(s) and update daily P&L
+            try:
+                # Common fields for trade log
+                entry_time = self.open_position.get('entry_time')
+                trade_base = {
+                    'entry_time': entry_time.strftime('%Y-%m-%d %H:%M:%S') if hasattr(entry_time, 'strftime') else str(entry_time),
+                    'exit_time': current_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'type': self.open_position.get('type'),
+                    'strike': self.open_position.get('strike'),
+                    'expiry': self.open_position.get('expiry'),
+                    'entry_price': entry_price,
+                    'exit_price': current_price,
+                    'exit_reason': exit_reason,
+                    'pnl_percent': round(pnl_percent, 2),
+                }
+
+                if exit_action == "FULL_EXIT":
+                    exit_qty = int(self.open_position.get('quantity', 0))
+                    realized_pnl = pnl_amount
+                    trade_record = {
+                        **trade_base,
+                        'quantity': exit_qty,
+                        'realized_pnl': round(realized_pnl, 2),
+                        'partial': bool(self.open_position.get('partial_exit', False)),
+                        'action': exit_action,
+                    }
+                    self.trades_log.append(trade_record)
+                elif exit_action == "PARTIAL_EXIT":
+                    # For partial, pnl_amount corresponds to full quantity; realized is 50%
+                    exit_qty = max(1, int(self.open_position.get('quantity', 0)) // 2)
+                    realized_pnl = pnl_amount * 0.5
+                    trade_record = {
+                        **trade_base,
+                        'quantity': exit_qty,
+                        'realized_pnl': round(realized_pnl, 2),
+                        'partial': True,
+                        'action': exit_action,
+                    }
+                    self.trades_log.append(trade_record)
+            except Exception as _:
+                # Do not block on logging errors
+                pass
+
             # Update daily P&L
             if exit_action == "FULL_EXIT":
                 self.daily_pnl += pnl_amount
@@ -1779,11 +1763,11 @@ Note: This is an automated intraday signal.
     
     def generate_excel_report(self):
         """Generate Excel report of all signals"""
-        if not self.all_signals:
-            print("\nNo signals to report")
-            return
-            
         try:
+            # Ensure reports directory exists
+            reports_dir = "reports"
+            os.makedirs(reports_dir, exist_ok=True)
+
             wb = Workbook()
             ws = wb.active
             ws.title = "Intraday Signals"
@@ -1804,32 +1788,36 @@ Note: This is an automated intraday signal.
                 cell.fill = header_fill
                 cell.alignment = header_align
             
-            # Add data
-            for row, signal in enumerate(self.all_signals, 2):
-                ws.cell(row=row, column=1, value=signal['time'].strftime('%Y-%m-%d %H:%M:%S'))
-                ws.cell(row=row, column=2, value=signal['type'])
-                ws.cell(row=row, column=3, value=signal['spot_price'])
-                ws.cell(row=row, column=4, value=signal['strike'])
-                ws.cell(row=row, column=5, value=signal['premium'])
-                ws.cell(row=row, column=6, value=signal['score'])
-                ws.cell(row=row, column=7, value=signal['strength'])
-                ws.cell(row=row, column=8, value=signal['target1'])
-                ws.cell(row=row, column=9, value=signal['target2'])
-                ws.cell(row=row, column=10, value=signal['stop_loss'])
-                ws.cell(row=row, column=11, value=self.daily_pnl)
-                ws.cell(row=row, column=12, value="; ".join(signal['reasons']))
-            
+            # Add data (or placeholder when none)
+            if len(self.all_signals) > 0:
+                for row, signal in enumerate(self.all_signals, 2):
+                    ws.cell(row=row, column=1, value=signal['time'].strftime('%Y-%m-%d %H:%M:%S'))
+                    ws.cell(row=row, column=2, value=signal['type'])
+                    ws.cell(row=row, column=3, value=signal['spot_price'])
+                    ws.cell(row=row, column=4, value=signal['strike'])
+                    ws.cell(row=row, column=5, value=signal['premium'])
+                    ws.cell(row=row, column=6, value=signal['score'])
+                    ws.cell(row=row, column=7, value=signal['strength'])
+                    ws.cell(row=row, column=8, value=signal['target1'])
+                    ws.cell(row=row, column=9, value=signal['target2'])
+                    ws.cell(row=row, column=10, value=signal['stop_loss'])
+                    ws.cell(row=row, column=11, value=self.daily_pnl)
+                    ws.cell(row=row, column=12, value="; ".join(signal['reasons']))
+            else:
+                ws.cell(row=2, column=1, value="No signals generated today")
+
             # Auto-adjust column widths
             for column in ws.columns:
                 max_length = 0
                 column_letter = get_column_letter(column[0].column)
                 for cell in column:
                     try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(cell.value)
-                    except:
+                        val_len = len(str(cell.value))
+                        if val_len > max_length:
+                            max_length = val_len
+                    except Exception:
                         pass
-                adjusted_width = (max_length + 2)
+                adjusted_width = max_length + 2
                 ws.column_dimensions[column_letter].width = adjusted_width
             
             # Add summary
@@ -1840,12 +1828,57 @@ Note: This is an automated intraday signal.
             ws2.append(["Put Signals", len([s for s in self.all_signals if s['type'] == 'PUT'])])
             ws2.append(["Total Trades", len(self.trades_today)])
             ws2.append(["Daily P&L", f"Rs.{self.daily_pnl:,.0f}"])
-            
+
+            # Trades sheet
+            ws3 = wb.create_sheet(title="Trades")
+            trade_headers = [
+                "Entry Time", "Exit Time", "Type", "Strike", "Expiry", "Quantity",
+                "Entry Price", "Exit Price", "Realized P&L", "P&L %", "Exit Reason", "Action", "Partial"
+            ]
+            for col_idx, header in enumerate(trade_headers, start=1):
+                cell = ws3.cell(row=1, column=col_idx, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                ws3.column_dimensions[get_column_letter(col_idx)].width = 16
+            # Populate trades
+            for r_idx, t in enumerate(self.trades_log, start=2):
+                ws3.cell(row=r_idx, column=1, value=t.get('entry_time'))
+                ws3.cell(row=r_idx, column=2, value=t.get('exit_time'))
+                ws3.cell(row=r_idx, column=3, value=t.get('type'))
+                ws3.cell(row=r_idx, column=4, value=t.get('strike'))
+                ws3.cell(row=r_idx, column=5, value=t.get('expiry'))
+                ws3.cell(row=r_idx, column=6, value=t.get('quantity'))
+                ws3.cell(row=r_idx, column=7, value=t.get('entry_price'))
+                ws3.cell(row=r_idx, column=8, value=t.get('exit_price'))
+                ws3.cell(row=r_idx, column=9, value=t.get('realized_pnl'))
+                ws3.cell(row=r_idx, column=10, value=t.get('pnl_percent'))
+                ws3.cell(row=r_idx, column=11, value=t.get('exit_reason'))
+                ws3.cell(row=r_idx, column=12, value=t.get('action'))
+                ws3.cell(row=r_idx, column=13, value=str(t.get('partial', False)))
+
             # Save file
             filename = f"intraday_signals_{now_ist().strftime('%Y%m%d')}.xlsx"
-            wb.save(filename)
-            print(f"\n📊 Excel report saved: {filename}")
-            
+            full_path = os.path.join(reports_dir, filename)
+            wb.save(full_path)
+            print(f"\n📊 Excel report saved: {full_path}")
+
+            # CSV export of trades
+            try:
+                trades_csv = os.path.join(reports_dir, f"trades_{now_ist().strftime('%Y%m%d')}.csv")
+                # Ensure consistent columns
+                if len(self.trades_log) == 0:
+                    # Write headers only
+                    pd.DataFrame(columns=[
+                        'entry_time','exit_time','type','strike','expiry','quantity',
+                        'entry_price','exit_price','realized_pnl','pnl_percent','exit_reason','action','partial'
+                    ]).to_csv(trades_csv, index=False)
+                else:
+                    pd.DataFrame(self.trades_log).to_csv(trades_csv, index=False)
+                print(f"🧾 Trades CSV saved: {trades_csv}")
+            except Exception as _:
+                print("Warning: Failed to save trades CSV")
+        
         except Exception as e:
             print(f"\nError generating Excel report: {e}")
     
@@ -1866,6 +1899,7 @@ Note: This is an automated intraday signal.
             ["Target 2", f"{self.target2_percent}%"],
             ["Max Trades/Day", f"{self.max_trades_per_day}"],
             ["Daily Loss Limit", f"Rs.{self.daily_loss_limit}"],
+            ["Force Entry", "Enabled" if self.enable_force_entry else "Disabled"],
             ["Force Signal Time", self.forced_signal_time]
         ]
         
@@ -1913,7 +1947,7 @@ Note: This is an automated intraday signal.
                 
                 # Manage existing position
                 if self.open_position:
-                    df = self.get_historical_data(interval='1minute', days=1)
+                    df = self.get_current_day_intraday_candles()
                     if df is not None:
                         # Get current option price for display
                         current_option = self.get_option_data(
@@ -1941,17 +1975,19 @@ Note: This is an automated intraday signal.
                 
                 # Check for new signals
                 elif current_time >= self.trading_start:
-                    # Calculate force time remaining
+                    # Calculate force time remaining (only if enabled)
                     force_time_remaining = None
-                    if len(self.trades_today) == 0 and current_time < self.forced_signal_time:
-                        force_time_remaining = self.status.format_time_remaining(self.forced_signal_time)
+                    if self.enable_force_entry:
+                        if len(self.trades_today) == 0 and current_time < self.forced_signal_time:
+                            force_time_remaining = self.status.format_time_remaining(self.forced_signal_time)
                     
-                    # Check if we should force a signal
+                    # Check if we should force a signal (only if enabled)
                     should_force = False
-                    if current_time >= self.forced_signal_time and len(self.trades_today) == 0:
-                        if not last_force_check or (now - last_force_check).seconds > 60:
-                            should_force = True
-                            last_force_check = now
+                    if self.enable_force_entry:
+                        if current_time >= self.forced_signal_time and len(self.trades_today) == 0:
+                            if not last_force_check or (now - last_force_check).seconds > 60:
+                                should_force = True
+                                last_force_check = now
                     
                     # Check market conditions
                     suitable, condition_msg = self.check_market_conditions()
@@ -2002,8 +2038,8 @@ Note: This is an automated intraday signal.
                     if df is not None:
                         signal = self.generate_intraday_signal(df)
                     
-                    # Force best signal if needed
-                    if not signal and should_force:
+                    # Force best signal if needed (only if enabled)
+                    if self.enable_force_entry and not signal and should_force:
                         signal = self.force_best_signal_of_day()
                         if signal:
                             print("\n🔔 FORCING BEST SIGNAL OF THE DAY!")
@@ -2073,11 +2109,8 @@ Note: This is an automated intraday signal.
                 print(f"📈 Total Signals Generated: {len(self.all_signals)}")
                 print(f"🎯 Total Trades Executed: {len(self.trades_today)}")
                 
-                # Generate Excel report
-                if len(self.all_signals) > 0:
-                    self.generate_excel_report()
-                else:
-                    print("\n📝 No signals generated today - No report created")
+                # Generate Excel report (always)
+                self.generate_excel_report()
                 
                 break
             except Exception as e:

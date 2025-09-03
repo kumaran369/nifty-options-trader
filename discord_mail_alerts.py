@@ -46,6 +46,9 @@ class DiscordWebhook:
             sl = targets.get('stop_loss', 0.0)
             t1 = targets.get('target1', 0.0)
             t2 = targets.get('target2', 0.0)
+            # Dynamic target percentages
+            pct1 = ((t1 / premium) - 1.0) * 100 if premium else 0.0
+            pct2 = ((t2 / premium) - 1.0) * 100 if premium else 0.0
 
             message = f"""🚀 **NIFTY OPTIONS SIGNAL** 🚀
 {forced_text}📊 **Signal:** {s_type} - {strength}
@@ -63,8 +66,8 @@ class DiscordWebhook:
 🎯 **TARGETS & STOP LOSS:**
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🛑 **Stop Loss:** ₹{sl:.2f}
-🎯 **Target 1:** ₹{t1:.2f} (+50%)
-🎯 **Target 2:** ₹{t2:.2f} (+100%)
+🎯 **Target 1:** ₹{t1:.2f} (+{pct1:.0f}%)
+🎯 **Target 2:** ₹{t2:.2f} (+{pct2:.0f}%)
 
 📊 **MARKET DATA:**
 ━━━━━━━━━━━━━━━━━━━
@@ -97,33 +100,54 @@ class TelegramBot:
     """Telegram bot sender for trading alerts"""
     def __init__(self, bot_token, chat_id):
         self.bot_token = bot_token
-        self.chat_id = chat_id
+        # Support multiple chat IDs (comma-separated string or list)
+        if isinstance(chat_id, str):
+            self.chat_ids = [id.strip() for id in chat_id.split(',') if id.strip()]
+        elif isinstance(chat_id, list):
+            self.chat_ids = chat_id
+        else:
+            self.chat_ids = [str(chat_id)]
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
 
     def send_message(self, message):
-        """Send plain text message to Telegram"""
-        payload = {
-            'chat_id': self.chat_id,
-            'text': message,
-            'parse_mode': 'HTML',
-            'disable_web_page_preview': True
-        }
-        last_err = None
-        for attempt in range(3):
-            try:
-                response = requests.post(self.base_url, data=payload, timeout=20)
-                if response.status_code == 200:
-                    return True, "Telegram message sent successfully"
-                else:
-                    last_err = f"Error: {response.status_code} {response.text}"
-            except Exception as e:
-                last_err = f"Exception: {str(e)}"
-            # small backoff
-            try:
-                import time as _t; _t.sleep(1 + attempt)
-            except Exception:
-                pass
-        return False, last_err or "Unknown Telegram send error"
+        """Send plain text message to all configured Telegram chats"""
+        all_success = True
+        results = []
+        
+        for chat_id in self.chat_ids:
+            payload = {
+                'chat_id': chat_id,
+                'text': message,
+                'parse_mode': 'HTML',
+                'disable_web_page_preview': True
+            }
+            
+            last_err = None
+            success = False
+            
+            for attempt in range(3):
+                try:
+                    response = requests.post(self.base_url, data=payload, timeout=20)
+                    if response.status_code == 200:
+                        success = True
+                        results.append(f"✅ Chat {chat_id}: Success")
+                        break
+                    else:
+                        last_err = f"Error: {response.status_code} {response.text}"
+                except Exception as e:
+                    last_err = f"Exception: {str(e)}"
+                # small backoff
+                try:
+                    import time as _t; _t.sleep(1 + attempt)
+                except Exception:
+                    pass
+            
+            if not success:
+                all_success = False
+                results.append(f"❌ Chat {chat_id}: {last_err}")
+        
+        result_msg = "; ".join(results)
+        return all_success, result_msg
 
     def send_signal_alert(self, signal, option_details, targets, quantity, total_investment):
         """Send formatted trading signal to Telegram"""
@@ -143,6 +167,9 @@ class TelegramBot:
             sl = targets.get('stop_loss', 0.0)
             t1 = targets.get('target1', 0.0)
             t2 = targets.get('target2', 0.0)
+            # Dynamic target percentages
+            pct1 = ((t1 / premium) - 1.0) * 100 if premium else 0.0
+            pct2 = ((t2 / premium) - 1.0) * 100 if premium else 0.0
 
             message = f"""🚀 <b>NIFTY OPTIONS SIGNAL</b> 🚀
 {forced_text}📊 <b>Signal:</b> {s_type} - {strength}
@@ -160,8 +187,8 @@ class TelegramBot:
 🎯 <b>TARGETS & STOP LOSS:</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🛑 <b>Stop Loss:</b> ₹{sl:.2f}
-🎯 <b>Target 1:</b> ₹{t1:.2f} (+50%)
-🎯 <b>Target 2:</b> ₹{t2:.2f} (+100%)
+🎯 <b>Target 1:</b> ₹{t1:.2f} (+{pct1:.0f}%)
+🎯 <b>Target 2:</b> ₹{t2:.2f} (+{pct2:.0f}%)
 
 📊 <b>MARKET DATA:</b>
 ━━━━━━━━━━━━━━━━━━━
@@ -333,6 +360,9 @@ class NotificationManager:
         sl = targets.get('stop_loss', 0.0)
         t1 = targets.get('target1', 0.0)
         t2 = targets.get('target2', 0.0)
+        # Dynamic target percentages
+        pct1 = ((t1 / premium) - 1.0) * 100 if premium else 0.0
+        pct2 = ((t2 / premium) - 1.0) * 100 if premium else 0.0
         reasons = '\n'.join([f"- {r}" for r in (signal.get('reasons', []) or [])])
         forced = ' [FORCED]' if signal.get('forced') else ''
         subject = f"NIFTY SIGNAL{forced}: {s_type} {strength} | Strike {strike} | Prem ₹{premium:.2f}"
@@ -353,8 +383,8 @@ Investment: ₹{total_investment:,.0f}
 TARGETS & STOP LOSS
 -------------------
 Stop Loss: ₹{sl:.2f}
-Target 1: ₹{t1:.2f} (+50%)
-Target 2: ₹{t2:.2f} (+100%)
+Target 1: ₹{t1:.2f} (+{pct1:.0f}%)
+Target 2: ₹{t2:.2f} (+{pct2:.0f}%)
 
 MARKET DATA
 -----------
