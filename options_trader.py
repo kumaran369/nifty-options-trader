@@ -40,6 +40,7 @@ class StatusDisplay:
         self.spinner = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
         self.market_icons = itertools.cycle(['📈', '📊', '📉', '📊'])
         self.is_running = False
+        self.enable_force_entry = False
         
     def clear_line(self):
         """Clear current line in terminal"""
