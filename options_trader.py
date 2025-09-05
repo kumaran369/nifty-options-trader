@@ -257,8 +257,7 @@ class IntradayNiftyTrader:
         self.max_premium = 200
         self.min_premium = 30
         self.sl_percent = 25
-        self.target1_percent = 50
-        self.target2_percent = 100
+        self.target_percent = 15  # Single target at 15% profit
         
         # Trade tracking
         self.trades_today = []
@@ -1345,8 +1344,7 @@ class IntradayNiftyTrader:
         """Calculate option price targets and stop loss"""
         return {
             'stop_loss': entry_premium * (1 - self.sl_percent / 100),
-            'target1': entry_premium * (1 + self.target1_percent / 100),
-            'target2': entry_premium * (1 + self.target2_percent / 100),
+            'target': entry_premium * (1 + self.target_percent / 100),
             'trailing_stop': entry_premium * 0.85
         }
     
@@ -1360,8 +1358,7 @@ class IntradayNiftyTrader:
         quantity = self.fixed_lots * self.nifty_lot_size
         total_investment = option_details['premium'] * quantity
         max_loss = (option_details['premium'] - targets['stop_loss']) * quantity
-        target1_profit = (targets['target1'] - option_details['premium']) * quantity
-        target2_profit = (targets['target2'] - option_details['premium']) * quantity
+        target_profit = (targets['target'] - option_details['premium']) * quantity
         
         print("\n" + "="*80)
         print(f"INTRADAY {signal['type']} SIGNAL - {signal['strength']}")
@@ -1388,11 +1385,9 @@ class IntradayNiftyTrader:
             ["Quantity", f"{quantity} shares"],
             ["Investment", f"Rs.{total_investment:,.0f}"],
             ["Stop Loss", f"Rs.{targets['stop_loss']:.2f} (-{self.sl_percent}%)"],
-            ["Target 1", f"Rs.{targets['target1']:.2f} (+{self.target1_percent}%)"],
-            ["Target 2", f"Rs.{targets['target2']:.2f} (+{self.target2_percent}%)"],
+            ["Target", f"Rs.{targets['target']:.2f} (+{self.target_percent}%)"],
             ["Max Loss", f"Rs.{max_loss:,.0f}"],
-            ["Target 1 Profit", f"Rs.{target1_profit:,.0f}"],
-            ["Target 2 Profit", f"Rs.{target2_profit:,.0f}"]
+            ["Target Profit", f"Rs.{target_profit:,.0f}"]
         ]
         
         print("\nTRADE EXECUTION:")
@@ -1447,9 +1442,9 @@ class IntradayNiftyTrader:
         
         # Trading Rules
         print("\nINTRADAY RULES:")
-        print("1. Exit at stop loss or target - whichever comes first")
-        print("2. Trail stop loss to entry after 30% profit")
-        print("3. Book 50% at Target 1, rest at Target 2")
+        print("1. Exit at stop loss (-25%) or target (+15%) - whichever comes first")
+        print("2. Trail stop loss to entry after 10% profit")
+        print("3. Full exit at single target - no partial booking")
         print("4. Square off all positions by 3:15 PM")
         print("5. Maximum 3 trades per day")
         
@@ -1592,22 +1587,18 @@ Note: This is an automated intraday signal.
             exit_reason = "Stop Loss Hit"
             exit_action = "FULL_EXIT"
         
-        # Check targets
-        elif current_price >= self.open_position['target2']:
-            exit_reason = "Target 2 Achieved"
+        # Check target (single 15% target)
+        elif current_price >= self.open_position['target']:
+            exit_reason = "Target Achieved (15%)"
             exit_action = "FULL_EXIT"
-        
-        elif current_price >= self.open_position['target1'] and not self.open_position.get('partial_exit'):
-            exit_reason = "Target 1 Achieved"
-            exit_action = "PARTIAL_EXIT"
         
         # Time-based exit
         elif time_str >= self.square_off_start:
             exit_reason = "End of Day Square Off"
             exit_action = "FULL_EXIT"
         
-        # Trailing stop loss (after 30% profit)
-        elif pnl_percent >= 30:
+        # Trailing stop loss (after 10% profit - since target is only 15%)
+        elif pnl_percent >= 10:
             # Trail to entry price as per rules
             trailing_sl = entry_price
             if current_price <= trailing_sl:
@@ -1668,19 +1659,10 @@ Note: This is an automated intraday signal.
                 # Do not block on logging errors
                 pass
 
-            # Update daily P&L
+            # Update daily P&L (only FULL_EXIT now since we have single target)
             if exit_action == "FULL_EXIT":
                 self.daily_pnl += pnl_amount
                 self.open_position = None
-            elif exit_action == "PARTIAL_EXIT":
-                # Calculate exact 50% exit quantity
-                exit_qty = max(1, int(self.open_position['quantity'] * 0.5))
-                remaining_qty = self.open_position['quantity'] - exit_qty
-                realized_pnl_partial = (pnl_amount / self.open_position['quantity']) * exit_qty
-                
-                self.daily_pnl += realized_pnl_partial
-                self.open_position['partial_exit'] = True
-                self.open_position['quantity'] = remaining_qty
             
             return {
                 'action': exit_action,
@@ -1704,8 +1686,7 @@ Note: This is an automated intraday signal.
             ["Max Premium", f"Rs.{self.max_premium}"],
             ["Min Premium", f"Rs.{self.min_premium}"],
             ["Stop Loss", f"{self.sl_percent}%"],
-            ["Target 1", f"{self.target1_percent}%"],
-            ["Target 2", f"{self.target2_percent}%"],
+            ["Target", f"{self.target_percent}%"],
             ["Max Trades/Day", f"{self.max_trades_per_day}"],
             ["Daily Loss Limit", f"Rs.{self.daily_loss_limit}"],
         ]
@@ -1862,8 +1843,7 @@ Note: This is an automated intraday signal.
                                 'entry_price': option_details['premium'],
                                 'quantity': quantity,
                                 'stop_loss': targets['stop_loss'],
-                                'target1': targets['target1'],
-                                'target2': targets['target2'],
+                                'target': targets['target'],
                                 'entry_time': now
                             }
                             
@@ -1882,8 +1862,7 @@ Note: This is an automated intraday signal.
                                 'premium': option_details['premium'],
                                 'score': signal['score'],
                                 'strength': signal['strength'],
-                                'target1': targets['target1'],
-                                'target2': targets['target2'],
+                                'target': targets['target'],
                                 'stop_loss': targets['stop_loss'],
                                 'reasons': signal['reasons']
                             }
@@ -1919,7 +1898,7 @@ Note: This is an automated intraday signal.
             ws_signals = wb.active
             ws_signals.title = "Signals"
             
-            signal_headers = ['Time', 'Type', 'Spot Price', 'Strike', 'Premium', 'Score', 'Strength', 'Target1', 'Target2', 'Stop Loss', 'Reasons']
+            signal_headers = ['Time', 'Type', 'Spot Price', 'Strike', 'Premium', 'Score', 'Strength', 'Target', 'Stop Loss', 'Reasons']
             ws_signals.append(signal_headers)
             
             for signal in self.all_signals:
@@ -1932,8 +1911,7 @@ Note: This is an automated intraday signal.
                     signal['premium'],
                     signal['score'],
                     signal['strength'],
-                    signal['target1'],
-                    signal['target2'],
+                    signal['target'],
                     signal['stop_loss'],
                     reasons_str
                 ])
