@@ -40,28 +40,12 @@ class StatusDisplay:
         self.spinner = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
         self.market_icons = itertools.cycle(['📈', '📊', '📉', '📊'])
         self.is_running = False
-        self.enable_force_entry = False
         
     def clear_line(self):
         """Clear current line in terminal"""
         sys.stdout.write('\r' + ' ' * 120 + '\r')
         sys.stdout.flush()
         
-    def format_time_remaining(self, target_time_str):
-        """Calculate time remaining to target"""
-        now = now_ist()
-        target = datetime.strptime(target_time_str, '%H:%M').replace(
-            year=now.year, month=now.month, day=now.day, tzinfo=IST
-        )
-        
-        if target < now:
-            return "00:00"
-            
-        diff = target - now
-        hours = int(diff.total_seconds() // 3600)
-        minutes = int((diff.total_seconds() % 3600) // 60)
-        return f"{hours:02d}:{minutes:02d}"
-    
     def get_market_status_bar(self, current_time):
         """Generate market status progress bar"""
         market_open = datetime.strptime("09:15", '%H:%M')
@@ -91,8 +75,7 @@ class StatusDisplay:
         icon = next(self.spinner)
         
         if current_time < market_open:
-            time_to_open = self.format_time_remaining(market_open)
-            status = f"{icon} 🌅 Pre-Market | Opens in: {time_to_open} | Current: {current_time}"
+            status = f"{icon} 🌅 Pre-Market | Opens in: {market_open} | Current: {current_time}"
         else:
             status = f"{icon} 🌙 Market Closed | Hours: {market_open}-{market_close} | Current: {current_time}"
         
@@ -109,7 +92,7 @@ class StatusDisplay:
     
     def display_live_market(self, current_time, spot_price, ce_premium, pe_premium, 
                            atm_strike, signal_attempts, trades_today, daily_pnl,
-                           has_signal=False, force_time_remaining=None):
+                           has_signal=False):
         """Display live market data with enhanced formatting"""
         self.clear_line()
         
@@ -137,10 +120,6 @@ class StatusDisplay:
             status_parts.append(f"💼 Trades: {trades_today}")
             pnl_icon = "🟢" if daily_pnl >= 0 else "🔴"
             status_parts.append(f"{pnl_icon} P&L: ₹{daily_pnl:+,.0f}")
-        
-        # Add force signal countdown (only if enabled)
-        if self.enable_force_entry and force_time_remaining and trades_today == 0:
-            status_parts.append(f"⏰ Force in: {force_time_remaining}")
         
         # Add signal status
         if has_signal:
@@ -254,9 +233,6 @@ class IntradayNiftyTrader:
         self.market_open = "09:15"
         self.trading_start = "09:30"
         self.last_entry = "15:00"
-        self.forced_signal_time = "14:30"
-        # Feature toggle: disable forced entry by default
-        self.enable_force_entry = False
         self.square_off_start = "15:15"
         self.market_close = "15:30"
         
@@ -310,7 +286,37 @@ class IntradayNiftyTrader:
         
     
     # --- existing methods remain unchanged ---
-
+    
+    def check_market_conditions(self):
+        """Check whether market conditions allow searching for a new entry.
+        Returns (suitable: bool, message: str)
+        """
+        now = now_ist()
+        time_str = now.strftime('%H:%M')
+        
+        # Respect entry window
+        if time_str < self.trading_start:
+            return False, f"Waiting for trading start {self.trading_start}"
+        if time_str > self.last_entry:
+            return False, f"Past last entry time {self.last_entry}"
+        if time_str >= self.square_off_start:
+            return False, f"Square-off window started {self.square_off_start}"
+        
+        # Daily risk limits
+        if self.max_trades_per_day and len(self.trades_today) >= self.max_trades_per_day:
+            return False, "Max trades for the day reached"
+        if self.daily_loss_limit and self.daily_pnl <= -self.daily_loss_limit:
+            return False, "Daily loss limit reached"
+        
+        # Cooldown between signals/entries
+        if self.last_signal_time is not None:
+            elapsed = (now - self.last_signal_time).total_seconds() / 60.0
+            remaining = self.signal_cooldown_minutes - elapsed
+            if remaining > 0:
+                return False, f"Cooldown {remaining:.1f} min remaining"
+        
+        return True, "OK"
+    
     def get_access_token(self):
         """Get new access token"""
         API_KEY = os.getenv("UPSTOX_API_KEY", "")
@@ -1245,15 +1251,6 @@ class IntradayNiftyTrader:
                         bear_score += 2
                         reasons.append("Rejection from VWAP")
         
-        # Force signal logic (only if enabled)
-        force_signal = False
-        if self.enable_force_entry:
-            if current_time >= self.forced_signal_time and len(self.trades_today) == 0:
-                if max(bull_score, bear_score) >= 2:
-                    force_signal = True
-                    min_score = 2
-                    reasons.append("End of day signal (forced)")
-        
         # Apply confidence multiplier
         bull_score *= confidence_multiplier
         bear_score *= confidence_multiplier
@@ -1301,7 +1298,6 @@ class IntradayNiftyTrader:
                 'option_sentiment': {'pcr_oi': 1.0, 'market_bias': 'NEUTRAL', 
                                    'immediate_support': current_price * 0.995,
                                    'immediate_resistance': current_price * 1.005},
-                'forced': force_signal
             }
         elif bear_score >= min_score and bear_score > bull_score * 1.1:
             signal = {
@@ -1315,7 +1311,6 @@ class IntradayNiftyTrader:
                 'option_sentiment': {'pcr_oi': 1.0, 'market_bias': 'NEUTRAL',
                                    'immediate_support': current_price * 0.995,
                                    'immediate_resistance': current_price * 1.005},
-                'forced': force_signal
             }
         
         # Log near misses only if close
@@ -1348,8 +1343,6 @@ class IntradayNiftyTrader:
         
         print("\n" + "="*80)
         print(f"INTRADAY {signal['type']} SIGNAL - {signal['strength']}")
-        if signal.get('forced'):
-            print("⚠️  FORCED SIGNAL - End of day trade to ensure daily signal")
         print("="*80)
         
         # Signal Information
@@ -1486,11 +1479,8 @@ class IntradayNiftyTrader:
             quantity = self.fixed_lots * self.nifty_lot_size
             total_investment = premium * quantity
             
-            forced_text = "\n⚠️ FORCED SIGNAL - End of day trade\n" if signal.get('forced') else ""
-            
             body = f"""
 INTRADAY NIFTY OPTIONS SIGNAL
-{forced_text}
 Signal: {stype} - {strength}
 Score: {score:.1f}
 Time: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}
@@ -1594,11 +1584,6 @@ Note: This is an automated intraday signal.
             exit_reason = "End of Day Square Off"
             exit_action = "FULL_EXIT"
         
-        # Time decay protection (after 2 PM with small profit)
-        elif time_str >= "14:00" and pnl_percent < 10:
-            exit_reason = "Time Decay Protection"
-            exit_action = "FULL_EXIT"
-        
         # Trailing stop loss (after 30% profit)
         elif pnl_percent >= 30:
             # Trail to entry price as per rules
@@ -1679,210 +1664,6 @@ Note: This is an automated intraday signal.
         
         return None
     
-    def force_best_signal_of_day(self):
-        """Force the best signal of the day if no trades executed"""
-        if len(self.trades_today) == 0 and self.best_signal_today:
-            print("\n" + "="*60)
-            print("FORCING BEST SIGNAL OF THE DAY")
-            print("="*60)
-            
-            best = self.best_signal_today
-            if best['bull_score'] > best['bear_score']:
-                signal_type = 'CALL'
-                score = best['bull_score']
-            else:
-                signal_type = 'PUT'
-                score = best['bear_score']
-            
-            signal = {
-                'type': signal_type,
-                'score': score,
-                'strength': 'WEAK' if score < 4 else ('MEDIUM' if score < 6 else 'STRONG'),
-                'spot_price': best['spot_price'],
-                'reasons': best['reasons'],
-                'momentum': best['momentum'],
-                'atr': best['atr'],
-                'option_sentiment': {'pcr_oi': 1.0, 'market_bias': 'NEUTRAL', 
-                                   'immediate_support': best['spot_price'] * 0.995,
-                                   'immediate_resistance': best['spot_price'] * 1.005},
-                'forced': True
-            }
-            
-            return signal
-        return None
-    
-    def check_market_conditions(self):
-        """Check if market conditions are suitable for trading"""
-        try:
-            # Get current Nifty price
-            spot_price = self.get_nifty_spot_price()
-            if not spot_price:
-                return False, "No spot price data"
-            
-            # Check if price is within reasonable range
-            if spot_price < 15000 or spot_price > 30000:
-                return False, f"Spot price out of range: {spot_price}"
-            
-            return True, "Market conditions suitable"
-            
-        except Exception as e:
-            return False, f"Market check error: {e}"
-    
-    def test_basic_auth(self):
-        """Test basic authentication"""
-        print("\nTesting Authentication...")
-        url = f"{self.base_url}/v2/user/profile"
-        
-        try:
-            response = requests.get(url, headers=self.headers, timeout=10)
-            print(f"Auth Response Code: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('status') == 'success':
-                    user_data = data.get('data', {})
-                    print(f"[SUCCESS] Authenticated as: {user_data.get('user_name', 'Unknown')}")
-                    print(f"  Email: {user_data.get('email', 'N/A')}")
-                    print(f"  User ID: {user_data.get('user_id', 'N/A')}")
-                    return True
-                else:
-                    print("[FAILED] Authentication response not successful")
-                    return False
-            elif response.status_code == 401:
-                print("[FAILED] Authentication Failed - Token Invalid/Expired")
-                print("\nPlease get a new token:")
-                print("1. Delete nifty_intraday_token.txt")
-                print("2. Run program again")
-                print("3. Select 'n' for new token")
-                return False
-            else:
-                print(f"[FAILED] Unexpected response: {response.text[:200]}")
-                return False
-        except Exception as e:
-            print(f"[ERROR] Connection Error: {e}")
-            return False
-    
-    def generate_excel_report(self):
-        """Generate Excel report of all signals"""
-        try:
-            # Ensure reports directory exists
-            reports_dir = "reports"
-            os.makedirs(reports_dir, exist_ok=True)
-
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Intraday Signals"
-            
-            # Set headers
-            headers = ["Time", "Type", "Spot Price", "Strike", "Premium", "Score", 
-                      "Strength", "Target1", "Target2", "Stop Loss", "P&L", "Reasons"]
-            
-            # Style for headers
-            header_font = Font(bold=True, color="FFFFFF")
-            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-            header_align = Alignment(horizontal="center", vertical="center")
-            
-            # Add headers
-            for col, header in enumerate(headers, 1):
-                cell = ws.cell(row=1, column=col, value=header)
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = header_align
-            
-            # Add data (or placeholder when none)
-            if len(self.all_signals) > 0:
-                for row, signal in enumerate(self.all_signals, 2):
-                    ws.cell(row=row, column=1, value=signal['time'].strftime('%Y-%m-%d %H:%M:%S'))
-                    ws.cell(row=row, column=2, value=signal['type'])
-                    ws.cell(row=row, column=3, value=signal['spot_price'])
-                    ws.cell(row=row, column=4, value=signal['strike'])
-                    ws.cell(row=row, column=5, value=signal['premium'])
-                    ws.cell(row=row, column=6, value=signal['score'])
-                    ws.cell(row=row, column=7, value=signal['strength'])
-                    ws.cell(row=row, column=8, value=signal['target1'])
-                    ws.cell(row=row, column=9, value=signal['target2'])
-                    ws.cell(row=row, column=10, value=signal['stop_loss'])
-                    ws.cell(row=row, column=11, value=self.daily_pnl)
-                    ws.cell(row=row, column=12, value="; ".join(signal['reasons']))
-            else:
-                ws.cell(row=2, column=1, value="No signals generated today")
-
-            # Auto-adjust column widths
-            for column in ws.columns:
-                max_length = 0
-                column_letter = get_column_letter(column[0].column)
-                for cell in column:
-                    try:
-                        val_len = len(str(cell.value))
-                        if val_len > max_length:
-                            max_length = val_len
-                    except Exception:
-                        pass
-                adjusted_width = max_length + 2
-                ws.column_dimensions[column_letter].width = adjusted_width
-            
-            # Add summary
-            ws2 = wb.create_sheet("Summary")
-            ws2.append(["Metric", "Value"])
-            ws2.append(["Total Signals", len(self.all_signals)])
-            ws2.append(["Call Signals", len([s for s in self.all_signals if s['type'] == 'CALL'])])
-            ws2.append(["Put Signals", len([s for s in self.all_signals if s['type'] == 'PUT'])])
-            ws2.append(["Total Trades", len(self.trades_today)])
-            ws2.append(["Daily P&L", f"Rs.{self.daily_pnl:,.0f}"])
-
-            # Trades sheet
-            ws3 = wb.create_sheet(title="Trades")
-            trade_headers = [
-                "Entry Time", "Exit Time", "Type", "Strike", "Expiry", "Quantity",
-                "Entry Price", "Exit Price", "Realized P&L", "P&L %", "Exit Reason", "Action", "Partial"
-            ]
-            for col_idx, header in enumerate(trade_headers, start=1):
-                cell = ws3.cell(row=1, column=col_idx, value=header)
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-                ws3.column_dimensions[get_column_letter(col_idx)].width = 16
-            # Populate trades
-            for r_idx, t in enumerate(self.trades_log, start=2):
-                ws3.cell(row=r_idx, column=1, value=t.get('entry_time'))
-                ws3.cell(row=r_idx, column=2, value=t.get('exit_time'))
-                ws3.cell(row=r_idx, column=3, value=t.get('type'))
-                ws3.cell(row=r_idx, column=4, value=t.get('strike'))
-                ws3.cell(row=r_idx, column=5, value=t.get('expiry'))
-                ws3.cell(row=r_idx, column=6, value=t.get('quantity'))
-                ws3.cell(row=r_idx, column=7, value=t.get('entry_price'))
-                ws3.cell(row=r_idx, column=8, value=t.get('exit_price'))
-                ws3.cell(row=r_idx, column=9, value=t.get('realized_pnl'))
-                ws3.cell(row=r_idx, column=10, value=t.get('pnl_percent'))
-                ws3.cell(row=r_idx, column=11, value=t.get('exit_reason'))
-                ws3.cell(row=r_idx, column=12, value=t.get('action'))
-                ws3.cell(row=r_idx, column=13, value=str(t.get('partial', False)))
-
-            # Save file
-            filename = f"intraday_signals_{now_ist().strftime('%Y%m%d')}.xlsx"
-            full_path = os.path.join(reports_dir, filename)
-            wb.save(full_path)
-            print(f"\n📊 Excel report saved: {full_path}")
-
-            # CSV export of trades
-            try:
-                trades_csv = os.path.join(reports_dir, f"trades_{now_ist().strftime('%Y%m%d')}.csv")
-                # Ensure consistent columns
-                if len(self.trades_log) == 0:
-                    # Write headers only
-                    pd.DataFrame(columns=[
-                        'entry_time','exit_time','type','strike','expiry','quantity',
-                        'entry_price','exit_price','realized_pnl','pnl_percent','exit_reason','action','partial'
-                    ]).to_csv(trades_csv, index=False)
-                else:
-                    pd.DataFrame(self.trades_log).to_csv(trades_csv, index=False)
-                print(f"🧾 Trades CSV saved: {trades_csv}")
-            except Exception as _:
-                print("Warning: Failed to save trades CSV")
-        
-        except Exception as e:
-            print(f"\nError generating Excel report: {e}")
-    
     def run(self):
         """Main intraday trading loop - MODIFIED for daily signals with enhanced status"""
         self.status.display_startup_banner()
@@ -1900,8 +1681,6 @@ Note: This is an automated intraday signal.
             ["Target 2", f"{self.target2_percent}%"],
             ["Max Trades/Day", f"{self.max_trades_per_day}"],
             ["Daily Loss Limit", f"Rs.{self.daily_loss_limit}"],
-            ["Force Entry", "Enabled" if self.enable_force_entry else "Disabled"],
-            ["Force Signal Time", self.forced_signal_time]
         ]
         
         print("\n📋 CONFIGURATION:")
@@ -1911,7 +1690,6 @@ Note: This is an automated intraday signal.
         print("📌 Press Ctrl+C to stop\n")
         
         check_interval = 15  # Check every 15 seconds
-        last_force_check = None
         
         while True:
             try:
@@ -1976,20 +1754,6 @@ Note: This is an automated intraday signal.
                 
                 # Check for new signals
                 elif current_time >= self.trading_start:
-                    # Calculate force time remaining (only if enabled)
-                    force_time_remaining = None
-                    if self.enable_force_entry:
-                        if len(self.trades_today) == 0 and current_time < self.forced_signal_time:
-                            force_time_remaining = self.status.format_time_remaining(self.forced_signal_time)
-                    
-                    # Check if we should force a signal (only if enabled)
-                    should_force = False
-                    if self.enable_force_entry:
-                        if current_time >= self.forced_signal_time and len(self.trades_today) == 0:
-                            if not last_force_check or (now - last_force_check).seconds > 60:
-                                should_force = True
-                                last_force_check = now
-                    
                     # Check market conditions
                     suitable, condition_msg = self.check_market_conditions()
                     if not suitable:
@@ -2022,8 +1786,7 @@ Note: This is an automated intraday signal.
                             self.signal_attempts,
                             len(self.trades_today),
                             self.daily_pnl,
-                            False,
-                            force_time_remaining
+                            False
                         )
                     
                     # Get data and analyze
@@ -2038,12 +1801,6 @@ Note: This is an automated intraday signal.
                     # Try to get normal signal first
                     if df is not None:
                         signal = self.generate_intraday_signal(df)
-                    
-                    # Force best signal if needed (only if enabled)
-                    if self.enable_force_entry and not signal and should_force:
-                        signal = self.force_best_signal_of_day()
-                        if signal:
-                            print("\n🔔 FORCING BEST SIGNAL OF THE DAY!")
                     
                     if signal:
                         # Get option details
