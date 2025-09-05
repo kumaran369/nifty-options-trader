@@ -21,8 +21,6 @@ import itertools
 from discord_mail_alerts import NotificationManager
 from dotenv import load_dotenv
 
-
-
 # Load environment variables from .env if present
 load_dotenv()
 
@@ -270,6 +268,10 @@ class IntradayNiftyTrader:
         self.last_signal_time = None
         self.signal_cooldown_minutes = 10
         
+        # API rate limiting
+        self.last_api_call = None
+        self.api_call_interval = 1  # Minimum 1 second between API calls
+        
         # Detailed trade log (per realized exit)
         self.trades_log = []
         
@@ -391,8 +393,18 @@ class IntradayNiftyTrader:
         expiry = today + timedelta(days=days_ahead)
         return expiry.strftime('%Y-%m-%d'), expiry.strftime('%d%b%y').upper()
     
+    def _rate_limit_api_call(self):
+        """Ensure minimum interval between API calls"""
+        if self.last_api_call:
+            elapsed = (now_ist() - self.last_api_call).total_seconds()
+            if elapsed < self.api_call_interval:
+                time.sleep(self.api_call_interval - elapsed)
+        self.last_api_call = now_ist()
+    
     def get_nifty_spot_price(self):
         """Get current Nifty spot price"""
+        self._rate_limit_api_call()
+        
         symbols = [
             "NSE_INDEX|Nifty 50",
             "NSE_INDEX|Nifty%2050",
@@ -1088,6 +1100,11 @@ class IntradayNiftyTrader:
         if current_time < self.trading_start or current_time > self.last_entry:
             return None
         
+        # CRITICAL FIX: Avoid false signals in first 45 minutes
+        # Require more data for reliable signals
+        if current_time < "10:00" and len(df) < 45:
+            return None
+        
         # Check daily limits
         if self.max_trades_per_day and len(self.trades_today) >= self.max_trades_per_day:
             return None
@@ -1199,33 +1216,38 @@ class IntradayNiftyTrader:
         # Check if we need TIER 3 (expensive calculations)
         current_max_score = max(bull_score, bear_score) * confidence_multiplier
         
-        # Calculate minimum score needed
+        # Calculate minimum score needed - FIXED for early market hours
         if '09:30' <= current_time <= '10:00':
-            min_score = 4
+            min_score = 6  # Increased from 4 to avoid false signals
         elif '10:00' <= current_time <= '11:30':
-            min_score = 3.5
+            min_score = 4  # Increased from 3.5
         elif '13:00' <= current_time <= '14:00':
             min_score = 3.5
         else:
             min_score = 4
         
-        if len(self.trades_today) == 0:
-            min_score *= 0.8
+        # REMOVED: Don't reduce score for first trade in early hours
+        if len(self.trades_today) == 0 and current_time >= "10:30":
+            min_score *= 0.8  # Only apply reduction after 10:30 AM
         
         # Skip expensive calculations if we already have enough score
         need_more_analysis = current_max_score < min_score * 1.5
         
         # TIER 3: Expensive calculations (only if needed)
         if need_more_analysis or len(self.trades_today) == 0:
-            # Opening Range (medium cost)
+            # Opening Range (medium cost) - FIXED for early market
             orb = self.get_opening_range(df)
-            if orb:
-                if current_price > orb['high'] and volume_ratio > 1.1:
+            if orb and current_time >= "10:00":  # Only use ORB after 10 AM
+                # Require stronger breakout criteria
+                orb_threshold = orb['range'] * 0.3  # 30% of opening range
+                if (current_price > orb['high'] + orb_threshold and 
+                    volume_ratio > 1.5 and abs(roc) > 0.4):
                     bull_score += 2.5
-                    reasons.append(f"ORB Breakout above {orb['high']:.0f}")
-                elif current_price < orb['low'] and volume_ratio > 1.1:
+                    reasons.append(f"Strong ORB Breakout above {orb['high']:.0f}")
+                elif (current_price < orb['low'] - orb_threshold and 
+                      volume_ratio > 1.5 and abs(roc) > 0.4):
                     bear_score += 2.5
-                    reasons.append(f"ORB Breakdown below {orb['low']:.0f}")
+                    reasons.append(f"Strong ORB Breakdown below {orb['low']:.0f}")
             
             # Bollinger Bands (only if really needed)
             if current_max_score < min_score:
@@ -1651,9 +1673,14 @@ Note: This is an automated intraday signal.
                 self.daily_pnl += pnl_amount
                 self.open_position = None
             elif exit_action == "PARTIAL_EXIT":
-                self.daily_pnl += pnl_amount * 0.5  # Book 50%
+                # Calculate exact 50% exit quantity
+                exit_qty = max(1, int(self.open_position['quantity'] * 0.5))
+                remaining_qty = self.open_position['quantity'] - exit_qty
+                realized_pnl_partial = (pnl_amount / self.open_position['quantity']) * exit_qty
+                
+                self.daily_pnl += realized_pnl_partial
                 self.open_position['partial_exit'] = True
-                self.open_position['quantity'] = self.open_position['quantity'] // 2
+                self.open_position['quantity'] = remaining_qty
             
             return {
                 'action': exit_action,
@@ -1715,14 +1742,22 @@ Note: This is an automated intraday signal.
                     time.sleep(60)
                     continue
                 
-                # Reset daily counters at market open
-                if current_time == self.market_open and len(self.trades_today) > 0:
+                # Reset daily counters at market open (with time range check)
+                if (current_time >= self.market_open and current_time <= "09:20" and 
+                    len(self.trades_today) > 0 and 
+                    not hasattr(self, '_reset_done_today')):
                     self.trades_today = []
                     self.daily_pnl = 0
                     self.signal_attempts = 0
                     self.best_signal_today = None
                     self.potential_signals = []
+                    self._reset_done_today = True
                     print("\n🔄 Daily counters reset for new trading day\n")
+                
+                # Clear reset flag after market hours
+                if current_time > self.market_close:
+                    if hasattr(self, '_reset_done_today'):
+                        delattr(self, '_reset_done_today')
                 
                 # Manage existing position
                 if self.open_position:
@@ -1874,6 +1909,85 @@ Note: This is an automated intraday signal.
             except Exception as e:
                 print(f"\n❌ Error: {e}")
                 time.sleep(60)
+    
+    def generate_excel_report(self):
+        """Generate Excel report with signals and trades"""
+        try:
+            wb = Workbook()
+            
+            # Signals sheet
+            ws_signals = wb.active
+            ws_signals.title = "Signals"
+            
+            signal_headers = ['Time', 'Type', 'Spot Price', 'Strike', 'Premium', 'Score', 'Strength', 'Target1', 'Target2', 'Stop Loss', 'Reasons']
+            ws_signals.append(signal_headers)
+            
+            for signal in self.all_signals:
+                reasons_str = '; '.join(signal.get('reasons', []))
+                ws_signals.append([
+                    signal['time'].strftime('%Y-%m-%d %H:%M:%S'),
+                    signal['type'],
+                    signal['spot_price'],
+                    signal['strike'],
+                    signal['premium'],
+                    signal['score'],
+                    signal['strength'],
+                    signal['target1'],
+                    signal['target2'],
+                    signal['stop_loss'],
+                    reasons_str
+                ])
+            
+            # Trades sheet
+            ws_trades = wb.create_sheet("Trades")
+            trade_headers = ['Entry Time', 'Exit Time', 'Type', 'Strike', 'Entry Price', 'Exit Price', 'Quantity', 'P&L', 'P&L %', 'Exit Reason', 'Partial']
+            ws_trades.append(trade_headers)
+            
+            for trade in self.trades_log:
+                ws_trades.append([
+                    trade.get('entry_time', ''),
+                    trade.get('exit_time', ''),
+                    trade.get('type', ''),
+                    trade.get('strike', 0),
+                    trade.get('entry_price', 0),
+                    trade.get('exit_price', 0),
+                    trade.get('quantity', 0),
+                    trade.get('realized_pnl', 0),
+                    trade.get('pnl_percent', 0),
+                    trade.get('exit_reason', ''),
+                    trade.get('partial', False)
+                ])
+            
+            # Summary sheet
+            ws_summary = wb.create_sheet("Summary")
+            summary_data = [
+                ['Date', now_ist().strftime('%Y-%m-%d')],
+                ['Total Signals', len(self.all_signals)],
+                ['Total Trades', len(self.trades_today)],
+                ['Completed Trades', len(self.trades_log)],
+                ['Daily P&L', self.daily_pnl],
+                ['Signal Attempts', self.signal_attempts],
+                ['Success Rate', f"{(len(self.all_signals)/max(1,self.signal_attempts))*100:.1f}%" if self.signal_attempts > 0 else "0%"]
+            ]
+            
+            for row in summary_data:
+                ws_summary.append(row)
+            
+            # Style headers
+            header_font = Font(bold=True)
+            header_fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+            
+            for ws in [ws_signals, ws_trades, ws_summary]:
+                for cell in ws[1]:
+                    cell.font = header_font
+                    cell.fill = header_fill
+            
+            filename = f"trading_report_{now_ist().strftime('%Y%m%d')}.xlsx"
+            wb.save(filename)
+            print(f"📊 Excel report saved: {filename}")
+            
+        except Exception as e:
+            print(f"❌ Error generating Excel report: {e}")
 
 
 def main():
