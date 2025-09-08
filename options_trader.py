@@ -250,14 +250,17 @@ class IntradayNiftyTrader:
         self.macd_slow = 26
         self.macd_signal = 9
         
+        # === MARKET CONDITION SETTINGS (Easy to adjust) ===
+        # Adjust these values based on market volatility and conditions
+        self.target_percent = 20        # Target profit percentage
+        self.max_trades_per_day = 5     # Maximum trades per day
+        self.sl_percent = 25            # Stop loss percentage
+        self.daily_loss_limit = 5000    # Daily loss limit in Rs
+        
         # Risk management
         self.fixed_lots = 1
-        self.max_trades_per_day = 3
-        self.daily_loss_limit = 5000
         self.max_premium = 200
         self.min_premium = 30
-        self.sl_percent = 25
-        self.target_percent = 15  # Single target at 15% profit
         
         # Trade tracking
         self.trades_today = []

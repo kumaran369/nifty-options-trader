@@ -44,11 +44,9 @@ class DiscordWebhook:
             strike = option_details.get('strike', 0)
             premium = option_details.get('premium', 0.0)
             sl = targets.get('stop_loss', 0.0)
-            t1 = targets.get('target1', 0.0)
-            t2 = targets.get('target2', 0.0)
-            # Dynamic target percentages
-            pct1 = ((t1 / premium) - 1.0) * 100 if premium else 0.0
-            pct2 = ((t2 / premium) - 1.0) * 100 if premium else 0.0
+            target = targets.get('target', 0.0)
+            # Dynamic target percentage
+            target_pct = ((target / premium) - 1.0) * 100 if premium else 0.0
 
             message = f"""🚀 **NIFTY OPTIONS SIGNAL** 🚀
 {forced_text}📊 **Signal:** {s_type} - {strength}
@@ -63,11 +61,10 @@ class DiscordWebhook:
 📦 **Quantity:** {quantity} shares
 💸 **Investment:** ₹{total_investment:,.0f}
 
-🎯 **TARGETS & STOP LOSS:**
+🎯 **TARGET & STOP LOSS:**
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🛑 **Stop Loss:** ₹{sl:.2f}
-🎯 **Target 1:** ₹{t1:.2f} (+{pct1:.0f}%)
-🎯 **Target 2:** ₹{t2:.2f} (+{pct2:.0f}%)
+🎯 **Target:** ₹{target:.2f} (+{target_pct:.0f}%)
 
 📊 **MARKET DATA:**
 ━━━━━━━━━━━━━━━━━━━
@@ -84,8 +81,8 @@ class DiscordWebhook:
             message += """
 ⚡ **RULES:**
 1️⃣ Exit at SL or Target
-2️⃣ Trail SL after 30% profit
-3️⃣ Book 50% at T1, rest at T2
+2️⃣ Trail SL to entry after 10% profit
+3️⃣ Full exit at single target - no partial booking
 4️⃣ Square off by 3:15 PM
 
 🤖 *Automated Signal*"""
@@ -165,11 +162,9 @@ class TelegramBot:
             strike = option_details.get('strike', 0)
             premium = option_details.get('premium', 0.0)
             sl = targets.get('stop_loss', 0.0)
-            t1 = targets.get('target1', 0.0)
-            t2 = targets.get('target2', 0.0)
-            # Dynamic target percentages
-            pct1 = ((t1 / premium) - 1.0) * 100 if premium else 0.0
-            pct2 = ((t2 / premium) - 1.0) * 100 if premium else 0.0
+            target = targets.get('target', 0.0)
+            # Dynamic target percentage
+            target_pct = ((target / premium) - 1.0) * 100 if premium else 0.0
 
             message = f"""🚀 <b>NIFTY OPTIONS SIGNAL</b> 🚀
 {forced_text}📊 <b>Signal:</b> {s_type} - {strength}
@@ -184,11 +179,10 @@ class TelegramBot:
 📦 <b>Quantity:</b> {quantity} shares
 💸 <b>Investment:</b> ₹{total_investment:,.0f}
 
-🎯 <b>TARGETS & STOP LOSS:</b>
+🎯 <b>TARGET & STOP LOSS:</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🛑 <b>Stop Loss:</b> ₹{sl:.2f}
-🎯 <b>Target 1:</b> ₹{t1:.2f} (+{pct1:.0f}%)
-🎯 <b>Target 2:</b> ₹{t2:.2f} (+{pct2:.0f}%)
+🎯 <b>Target:</b> ₹{target:.2f} (+{target_pct:.0f}%)
 
 📊 <b>MARKET DATA:</b>
 ━━━━━━━━━━━━━━━━━━━
@@ -204,8 +198,8 @@ class TelegramBot:
             message += """
 ⚡ <b>RULES:</b>
 1️⃣ Exit at SL or Target
-2️⃣ Trail SL after 30% profit
-3️⃣ Book 50% at T1, rest at T2
+2️⃣ Trail SL to entry after 10% profit
+3️⃣ Full exit at single target - no partial booking
 4️⃣ Square off by 3:15 PM
 
 🤖 <i>Automated Signal</i>"""
@@ -358,11 +352,9 @@ class NotificationManager:
         strike = option_details.get('strike', 0)
         premium = option_details.get('premium', 0.0)
         sl = targets.get('stop_loss', 0.0)
-        t1 = targets.get('target1', 0.0)
-        t2 = targets.get('target2', 0.0)
-        # Dynamic target percentages
-        pct1 = ((t1 / premium) - 1.0) * 100 if premium else 0.0
-        pct2 = ((t2 / premium) - 1.0) * 100 if premium else 0.0
+        target = targets.get('target', 0.0)
+        # Dynamic target percentage
+        target_pct = ((target / premium) - 1.0) * 100 if premium else 0.0
         reasons = '\n'.join([f"- {r}" for r in (signal.get('reasons', []) or [])])
         forced = ' [FORCED]' if signal.get('forced') else ''
         subject = f"NIFTY SIGNAL{forced}: {s_type} {strength} | Strike {strike} | Prem ₹{premium:.2f}"
@@ -380,11 +372,10 @@ Premium: ₹{premium:.2f}
 Quantity: {quantity}
 Investment: ₹{total_investment:,.0f}
 
-TARGETS & STOP LOSS
--------------------
+TARGET & STOP LOSS
+------------------
 Stop Loss: ₹{sl:.2f}
-Target 1: ₹{t1:.2f} (+{pct1:.0f}%)
-Target 2: ₹{t2:.2f} (+{pct2:.0f}%)
+Target: ₹{target:.2f} (+{target_pct:.0f}%)
 
 MARKET DATA
 -----------
@@ -398,8 +389,8 @@ REASONS
 
 Rules:
 1) Exit at SL or Target
-2) Trail SL after 30% profit
-3) Book 50% at T1, rest at T2
+2) Trail SL to entry after 10% profit
+3) Full exit at single target - no partial booking
 4) Square off by 3:15 PM
 """.strip()
         return subject, body
