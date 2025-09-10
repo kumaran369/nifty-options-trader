@@ -252,9 +252,9 @@ class IntradayNiftyTrader:
         
         # === MARKET CONDITION SETTINGS (Easy to adjust) ===
         # Adjust these values based on market volatility and conditions
-        self.target_percent = 20        # Target profit percentage
+        self.target_percent = 10        # Target profit percentage
         self.max_trades_per_day = 5     # Maximum trades per day
-        self.sl_percent = 25            # Stop loss percentage
+        self.sl_percent = 20            # Stop loss percentage
         self.daily_loss_limit = 5000    # Daily loss limit in Rs
         
         # Risk management
